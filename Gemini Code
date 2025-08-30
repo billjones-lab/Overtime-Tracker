@@ -1,0 +1,441 @@
+import React, { useState, useEffect } from 'react';
+import { initializeApp } from 'firebase/app';
+import {
+  getAuth,
+  signInAnonymously,
+  signInWithCustomToken,
+  onAuthStateChanged
+} from 'firebase/auth';
+import {
+  getFirestore,
+  doc,
+  collection,
+  query,
+  onSnapshot,
+  addDoc,
+  updateDoc,
+  serverTimestamp,
+  orderBy
+} from 'firebase/firestore';
+import {
+  Ban,
+  Clock,
+  Send,
+  User,
+  CheckCircle,
+  PlusCircle,
+  XCircle,
+  EyeOff,
+  Eye
+} from 'lucide-react';
+
+// Firebase configuration and initialization
+const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+const firebaseConfig = JSON.parse(
+  typeof __firebase_config !== 'undefined'
+    ? __firebase_config
+    : '{}'
+);
+const app = initializeApp(firebaseConfig);
+const db = getFirestore(app);
+const auth = getAuth(app);
+
+// Sign in with custom token or anonymously
+const signIn = async () => {
+  try {
+    if (typeof __initial_auth_token !== 'undefined') {
+      await signInWithCustomToken(auth, __initial_auth_token);
+    } else {
+      await signInAnonymously(auth);
+    }
+  } catch (error) {
+    console.error('Firebase authentication error:', error);
+  }
+};
+
+// Main App Component
+const App = () => {
+  const [user, setUser] = useState(null);
+  const [isSupervisor, setIsSupervisor] = useState(true);
+  const [employeeIdInput, setEmployeeIdInput] = useState('');
+  const [showEmployeeId, setShowEmployeeId] = useState(false);
+  const [assignments, setAssignments] = useState([]);
+  const [newAssignment, setNewAssignment] = useState({
+    title: '',
+    description: '',
+    employeeId: '',
+    employeeName: '',
+    sourceOfFunding: '',
+    isCompleted: false,
+    startTime: '',
+    hoursWorked: 0,
+    supervisorId: ''
+  });
+
+  const [message, setMessage] = useState('');
+
+  // Authentication and data fetching
+  useEffect(() => {
+    signIn();
+    const unsubscribeAuth = onAuthStateChanged(auth, (currentUser) => {
+      if (currentUser) {
+        setUser(currentUser);
+        setNewAssignment((prev) => ({ ...prev, supervisorId: currentUser.uid }));
+        const currentUserId = currentUser.uid || crypto.randomUUID();
+        setEmployeeIdInput(currentUserId);
+      } else {
+        setUser(null);
+        setEmployeeIdInput('');
+      }
+    });
+
+    return () => unsubscribeAuth();
+  }, []);
+
+  // Real-time data subscription
+  useEffect(() => {
+    if (!user) return;
+
+    const assignmentsRef = collection(db, 'artifacts', appId, 'public', 'data', 'overtime-assignments');
+    const assignmentsQuery = query(assignmentsRef, orderBy('createdAt', 'desc'));
+
+    const unsubscribe = onSnapshot(assignmentsQuery, (snapshot) => {
+      const allAssignments = snapshot.docs.map(doc => ({
+        id: doc.id,
+        ...doc.data(),
+      }));
+
+      // Sort in-memory to avoid index issues
+      const sortedAssignments = allAssignments.sort((a, b) => {
+        const dateA = a.createdAt ? a.createdAt.toDate() : new Date(0);
+        const dateB = b.createdAt ? b.createdAt.toDate() : new Date(0);
+        return dateB - dateA;
+      });
+
+      setAssignments(sortedAssignments);
+    }, (error) => {
+      console.error('Firestore subscription error:', error);
+    });
+
+    return () => unsubscribe();
+  }, [user]);
+
+  const handleAssignmentChange = (e) => {
+    const { name, value } = e.target;
+    setNewAssignment({
+      ...newAssignment,
+      [name]: value,
+    });
+  };
+
+  const addAssignment = async () => {
+    if (newAssignment.title && newAssignment.employeeId) {
+      try {
+        await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'overtime-assignments'), {
+          ...newAssignment,
+          createdAt: serverTimestamp(),
+          supervisorId: user.uid,
+          isCompleted: false,
+          startTime: '',
+          hoursWorked: 0,
+        });
+        setNewAssignment({
+          title: '',
+          description: '',
+          employeeId: '',
+          employeeName: '',
+          sourceOfFunding: '',
+          isCompleted: false,
+          startTime: '',
+          hoursWorked: 0,
+          supervisorId: user.uid
+        });
+        setMessage('Assignment created successfully!');
+      } catch (e) {
+        console.error('Error adding document: ', e);
+        setMessage('Error creating assignment.');
+      }
+    } else {
+      setMessage('Please fill out all required fields.');
+    }
+  };
+
+  const updateAssignment = async (id, updatedFields) => {
+    try {
+      const assignmentDoc = doc(db, 'artifacts', appId, 'public', 'data', 'overtime-assignments', id);
+      await updateDoc(assignmentDoc, updatedFields);
+      setMessage('Assignment updated successfully!');
+    } catch (e) {
+      console.error('Error updating document: ', e);
+      setMessage('Error updating assignment.');
+    }
+  };
+
+  const toggleRole = () => {
+    setIsSupervisor(!isSupervisor);
+    setMessage('');
+  };
+
+  if (!user) {
+    return (
+      <div className="flex items-center justify-center min-h-screen bg-slate-100">
+        <div className="text-center p-8 bg-white rounded-xl shadow-lg">
+          <h1 className="text-2xl font-bold text-gray-800 mb-4">Loading...</h1>
+          <p className="text-gray-600">Please wait while we connect to the service.</p>
+        </div>
+      </div>
+    );
+  }
+
+  const userAssignments = assignments.filter(a => a.employeeId === employeeIdInput);
+  const supervisorAssignments = assignments.filter(a => a.supervisorId === user.uid);
+
+  return (
+    <div className="min-h-screen bg-gray-100 font-sans p-4 md:p-8">
+      <div className="flex justify-between items-center mb-6">
+        <h1 className="text-3xl md:text-4xl font-extrabold text-gray-900">Overtime Tracker</h1>
+        <button
+          onClick={toggleRole}
+          className="flex items-center space-x-2 px-4 py-2 rounded-full bg-blue-500 text-white font-semibold shadow-md transition-all hover:bg-blue-600 focus:outline-none focus:ring-2 focus:ring-blue-500"
+        >
+          {isSupervisor ? 'Switch to Employee View' : 'Switch to Supervisor View'}
+        </button>
+      </div>
+
+      <div className="flex flex-col md:flex-row gap-8">
+        {/* Main Content Area */}
+        <div className="flex-1 p-6 bg-white rounded-2xl shadow-xl transition-all">
+          <div className="flex items-center space-x-2 text-sm text-gray-600 mb-4">
+            <User className="w-4 h-4" />
+            <span>Your User ID:</span>
+            <span
+              className="font-mono text-gray-800 break-all cursor-pointer"
+              onClick={() => setShowEmployeeId(!showEmployeeId)}
+            >
+              {showEmployeeId ? employeeIdInput : '••••••••••••••••••••••••••••••••'}
+            </span>
+            <button
+              onClick={() => setShowEmployeeId(!showEmployeeId)}
+              className="text-gray-500 hover:text-gray-700 focus:outline-none"
+              aria-label={showEmployeeId ? 'Hide User ID' : 'Show User ID'}
+            >
+              {showEmployeeId ? <EyeOff size={16} /> : <Eye size={16} />}
+            </button>
+          </div>
+          {message && (
+            <div className="mb-4 p-3 rounded-lg bg-green-100 text-green-700">
+              {message}
+            </div>
+          )}
+
+          {isSupervisor && (
+            <div className="mb-8">
+              <h2 className="text-2xl font-bold text-gray-800 mb-4">Create New Assignment</h2>
+              <div className="space-y-4">
+                <input
+                  type="text"
+                  name="title"
+                  value={newAssignment.title}
+                  onChange={handleAssignmentChange}
+                  placeholder="Overtime Task Title"
+                  className="w-full p-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                />
+                <textarea
+                  name="description"
+                  value={newAssignment.description}
+                  onChange={handleAssignmentChange}
+                  placeholder="Task Description"
+                  rows="3"
+                  className="w-full p-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                ></textarea>
+                <input
+                  type="text"
+                  name="employeeId"
+                  value={newAssignment.employeeId}
+                  onChange={handleAssignmentChange}
+                  placeholder="Employee User ID"
+                  className="w-full p-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                />
+                <input
+                  type="text"
+                  name="employeeName"
+                  value={newAssignment.employeeName}
+                  onChange={handleAssignmentChange}
+                  placeholder="Employee Name"
+                  className="w-full p-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                />
+                <input
+                  type="text"
+                  name="sourceOfFunding"
+                  value={newAssignment.sourceOfFunding}
+                  onChange={handleAssignmentChange}
+                  placeholder="Source of Funding"
+                  className="w-full p-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                />
+                <button
+                  onClick={addAssignment}
+                  className="w-full flex items-center justify-center space-x-2 px-6 py-3 bg-green-500 text-white font-bold rounded-lg shadow-md transition-all hover:bg-green-600 focus:outline-none focus:ring-2 focus:ring-green-500"
+                >
+                  <PlusCircle className="w-5 h-5" />
+                  <span>Create Assignment</span>
+                </button>
+              </div>
+            </div>
+          )}
+
+          <div className="mb-8">
+            <h2 className="text-2xl font-bold text-gray-800 mb-4">
+              {isSupervisor ? 'Your Assigned Tasks' : 'My Assigned Tasks'}
+            </h2>
+            {isSupervisor && supervisorAssignments.length === 0 && (
+              <p className="text-gray-500 italic">You have not created any assignments yet.</p>
+            )}
+            {!isSupervisor && userAssignments.length === 0 && (
+              <p className="text-gray-500 italic">No overtime opportunities have been assigned to you.</p>
+            )}
+            <div className="space-y-4">
+              {isSupervisor ? (
+                supervisorAssignments.map((assignment) => (
+                  <AssignmentCard
+                    key={assignment.id}
+                    assignment={assignment}
+                    isSupervisor={isSupervisor}
+                    onUpdate={updateAssignment}
+                  />
+                ))
+              ) : (
+                userAssignments.map((assignment) => (
+                  <AssignmentCard
+                    key={assignment.id}
+                    assignment={assignment}
+                    isSupervisor={isSupervisor}
+                    onUpdate={updateAssignment}
+                  />
+                ))
+              )}
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+const AssignmentCard = ({ assignment, isSupervisor, onUpdate }) => {
+  const [isEditing, setIsEditing] = useState(false);
+  const [editedAssignment, setEditedAssignment] = useState({
+    title: assignment.title,
+    description: assignment.description,
+    employeeId: assignment.employeeId,
+    employeeName: assignment.employeeName,
+    sourceOfFunding: assignment.sourceOfFunding,
+    startTime: assignment.startTime || '',
+    hoursWorked: assignment.hoursWorked || 0,
+    isCompleted: assignment.isCompleted || false,
+  });
+
+  const handleEditChange = (e) => {
+    const { name, value, type, checked } = e.target;
+    setEditedAssignment((prev) => ({
+      ...prev,
+      [name]: type === 'checkbox' ? checked : value,
+    }));
+  };
+
+  const handleSave = () => {
+    onUpdate(assignment.id, {
+      startTime: editedAssignment.startTime,
+      hoursWorked: parseFloat(editedAssignment.hoursWorked),
+      isCompleted: editedAssignment.isCompleted,
+    });
+    setIsEditing(false);
+  };
+
+  return (
+    <div className="p-4 bg-white border border-gray-200 rounded-lg shadow-sm transition-all hover:shadow-md">
+      <div className="flex items-center justify-between mb-2">
+        <h3 className="text-lg font-bold text-gray-800">{assignment.title}</h3>
+        {isSupervisor ? (
+          <span className={`text-sm font-semibold px-2 py-1 rounded-full ${assignment.isCompleted ? 'bg-green-500 text-white' : 'bg-red-500 text-white'}`}>
+            {assignment.isCompleted ? 'Completed' : 'Pending'}
+          </span>
+        ) : (
+          <button
+            onClick={() => setIsEditing(!isEditing)}
+            className="text-blue-500 hover:text-blue-700 font-semibold focus:outline-none"
+          >
+            {isEditing ? 'Cancel' : 'Update'}
+          </button>
+        )}
+      </div>
+      <p className="text-sm text-gray-600 mb-3">{assignment.description}</p>
+      
+      <div className="text-sm text-gray-500 mb-2">
+        <span className="font-semibold">Assigned to:</span> {assignment.employeeName} ({assignment.employeeId})
+      </div>
+
+      {isEditing || assignment.isCompleted || isSupervisor ? (
+        <div className="space-y-2 text-sm text-gray-700">
+          <div className="flex items-center space-x-2">
+            <Clock size={16} className="text-gray-400" />
+            <span className="font-semibold">Start Time:</span>
+            {isEditing ? (
+              <input
+                type="datetime-local"
+                name="startTime"
+                value={editedAssignment.startTime}
+                onChange={handleEditChange}
+                className="p-1 border border-gray-300 rounded-md focus:outline-none focus:ring-1 focus:ring-blue-500"
+              />
+            ) : (
+              <span>{assignment.startTime || 'Not set'}</span>
+            )}
+          </div>
+          <div className="flex items-center space-x-2">
+            <Clock size={16} className="text-gray-400" />
+            <span className="font-semibold">Hours Worked:</span>
+            {isEditing ? (
+              <input
+                type="number"
+                name="hoursWorked"
+                value={editedAssignment.hoursWorked}
+                onChange={handleEditChange}
+                className="w-20 p-1 border border-gray-300 rounded-md focus:outline-none focus:ring-1 focus:ring-blue-500"
+              />
+            ) : (
+              <span>{assignment.hoursWorked || 'Not set'}</span>
+            )}
+          </div>
+          <div className="flex items-center space-x-2">
+            <CheckCircle size={16} className="text-gray-400" />
+            <span className="font-semibold">Completed:</span>
+            {isEditing ? (
+              <input
+                type="checkbox"
+                name="isCompleted"
+                checked={editedAssignment.isCompleted}
+                onChange={handleEditChange}
+                className="h-5 w-5 text-blue-600 rounded-md focus:ring-blue-500"
+              />
+            ) : (
+              <span>{assignment.isCompleted ? 'Yes' : 'No'}</span>
+            )}
+          </div>
+          {isEditing && (
+            <button
+              onClick={handleSave}
+              className="mt-2 w-full flex items-center justify-center space-x-2 px-4 py-2 bg-blue-500 text-white font-semibold rounded-lg shadow-md transition-all hover:bg-blue-600 focus:outline-none focus:ring-2 focus:ring-blue-500"
+            >
+              <Send className="w-4 h-4" />
+              <span>Save Changes</span>
+            </button>
+          )}
+        </div>
+      ) : (
+        <p className="text-sm text-gray-400 italic">Click "Update" to fill out the completion details.</p>
+      )}
+    </div>
+  );
+};
+
+export default App;
